@@ -86,12 +86,13 @@
 (deftest process-set-delimiters-test
   (testing "Correctly replaces custom delimiters"
     (is (= ["Hello, {{name}}" {:name "Felix"}]
-           (#'cs/process-set-delimiters "{{=<% %>=}}Hello, <%name%>" {:name "Felix"}))))
+           (#'cs/process-set-delimiters "{{=<% %>=}}Hello, <%name%>" {:name "Felix"} nil))))
 
   (testing "Do not replaces other delimiters"
     (is (= ["{{greeting}}, {{{names}}}" {:greeting "Hello" :name "Felix&Jenny"}]
            (#'cs/process-set-delimiters "{{=<% %>=}}<%greeting%>, {{{names}}}"
-                                        {:greeting "Hello" :name "Felix&Jenny"})))))
+                                        {:greeting "Hello" :name "Felix&Jenny"}
+                                        nil)))))
 
 ;; Render Tests
 
@@ -272,6 +273,14 @@
     (is (= "135" (render "{{#l}}{{x}}{{/l}}" {:l l})))
     (is (= "" (render "{{^l}}X{{/l}}" {:l l}))))
   (is (= "X" (render "{{^l}}X{{/l}}" {:l (sorted-set)}))))
+
+(deftest test-render-custom-tag
+  (is (= "X" (render "<% x %>" {:x "X"} nil {:default-delims ["<%" "%>"]})))
+  (is (= "X" (render "{{x}}" {:x "X"} nil {:default-delims ["{{" "}}"]})))
+  (is (= "X" (render "<%=++ ++=%>++x++" {:x "X"} nil {:default-delims ["<%" "%>"]})))
+  (is (= "X" (render "<%={{ }}=%>{{x}}" {:x "X"} nil {:default-delims ["<%" "%>"]})))
+  (is (= "Hi, Felix" (render "Hi, ++>name++" {:n "Felix"} {:name "++n++"} {:default-delims ["++" "++"]})))
+  (is (= "Hi, Felix" (render "Hi, ++={{ }}=++{{>name}}" {:n "Felix"} {:name "++n++"} {:default-delims ["++" "++"]}))))
 
 (deftest test-path-whitespace-handled-consistently
   (is (= (render "{{a}}" {:a "value"}) "value"))

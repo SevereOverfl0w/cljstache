@@ -155,11 +155,13 @@
 
 (defn- process-set-delimiters
   "Replaces custom set delimiters with mustaches."
-  [^String template data]
+  [^String template data opts]
   (let [builder (->stringbuilder template)
         data (atom data)
-        open-delim (atom (escape-regex "{{"))
-        close-delim (atom (escape-regex "}}"))
+        default-open-delim (escape-regex (or (-> opts :default-delims first) "{{"))
+        default-close-delim (escape-regex (or (-> opts :default-delims second) "}}"))
+        open-delim (atom default-open-delim)
+        close-delim (atom default-close-delim)
         set-delims (fn [open close]
                      (doseq [[var delim]
                              [[open-delim open] [close-delim close]]]
@@ -224,7 +226,7 @@
 
 (defn- create-partial-replacements
   "Creates pairs of partial replacements."
-  [template partials]
+  [template partials opts]
   (apply concat
          (for [k (keys partials)]
            (let [regex (re-pattern (str "(\r\n|[\r\n]|^)([ \\t]*)\\{\\{>\\s*"
@@ -232,12 +234,13 @@
                  indent (nth (first (re-seq (re-pattern regex) template)) 2)]
              [[(str "\\{\\{>\\s*" (name k) "\\s*\\}\\}")
                (first (process-set-delimiters (indent-partial (str (k partials))
-                                                              indent) {}))]]))))
+                                                              indent) {}
+                                              opts))]]))))
 
 (defn- include-partials
   "Include partials within the template."
-  [template partials]
-  (replace-all template (create-partial-replacements template partials)))
+  [template partials opts]
+  (replace-all template (create-partial-replacements template partials opts)))
 
 (defn- remove-comments
   "Removes comments from the template."
@@ -323,7 +326,7 @@
 
 (defn replace-variables
   "Replaces variables in the template with their values from the data."
-  [template data partials]
+  [template data partials opts]
   (let [regex #"\{\{(\{|\&|\>|)\s*(.*?)\s*\}{2,3}"]
     (replace-all-callback template regex
                           #(let [var-name (nth % 2)
@@ -335,11 +338,12 @@
                                               (var-value)
                                               (dissoc data var-name)
                                               partials
+                                              opts
                                               false)
                                              var-value)
                                  var-value (str var-value)]
                              (cond (= var-type "") (escape-html var-value)
-                                   (= var-type ">") (render-template (var-k partials) data partials false)
+                                   (= var-type ">") (render-template (var-k partials) data partials opts false)
                                    :else var-value)))))
 
 (defn- join-standalone-delimiter-tags
@@ -421,25 +425,27 @@
        true]])))
 
 (defn- delimiter-preprocess
-  [template data]
+  [template data opts]
   (let [template (join-standalone-delimiter-tags template)
-        [template data] (process-set-delimiters template data)]
+        [template data] (process-set-delimiters template data opts)]
     [template data]))
 
 (defn- preprocess
   "Preprocesses template and data (e.g. removing comments)."
-  [template data partials]
-  (let [[template data] (delimiter-preprocess template data)
+  [template data partials opts]
+  (let [[template data] (delimiter-preprocess template data opts)
         template (join-standalone-delimiter-tags template)
-        [template data] (process-set-delimiters template data)
+        [template data]
+        ;; Don't pass in custom delims for the second run as they're already {{
+        (process-set-delimiters template data (dissoc opts :default-delims))
         template (join-standalone-tags template)
         template (remove-comments template)
-        template (include-partials template partials)
+        template (include-partials template partials opts)
         template (convert-paths template data)]
     [template data]))
 
 (defn- render-section
-  [section data partials]
+  [section data partials opts]
   (let [section-data ((keyword (:name section)) data)]
     (if (:inverted section)
       (if (or (and (seqable? section-data) (empty? section-data))
@@ -449,7 +455,7 @@
         (if (fn? section-data)
           (let [result (section-data (:body section))]
             (if (fn? result)
-              (result #(render-template % data partials false))
+              (result #(render-template % data partials opts false))
               result))
           (let [section-data (cond (string? section-data) [{}]
                                    (sequential? section-data) section-data
@@ -462,41 +468,47 @@
                                     section-data))
                 section-data (map #(conj data %) section-data)]
             (map-str (fn [m]
-                       (render-template (:body section) m partials false))
+                       (render-template (:body section) m partials opts false))
                      section-data)))))))
 
 (defn- render-template
   "Renders the template with the data and partials."
-  [^String template data partials skip-delimiter-preprocess?]
+  [^String template data partials opts skip-delimiter-preprocess?]
   (let [[^String template data] (if skip-delimiter-preprocess?
                                   [template data]
-                                  (delimiter-preprocess template data ))
+                                  (delimiter-preprocess template data opts))
         ^String section (extract-section template)]
     (if (nil? section)
-      (replace-variables template data partials)
+      (replace-variables template data partials opts)
       (let [before (subs template 0 (:start section))
             after (subs template (:end section))]
-        (recur (str before (render-section section data partials) after) data
+        (recur (str before (render-section section data partials opts) after) data
                partials
+               opts
                false)))))
 
 (defn tags
   "Returns set of all tags in template"
-  [template]
-  (let [[^String template data] (preprocess template {} {})
+  [template default-open-close]
+  (let [[^String template data] (preprocess template {} {} default-open-close)
         matches (re-seq #"\{\{(\{|\&|\>|)\s*(.*?)\s*\}{2,3}" template)
         tags (map (comp keyword last) matches)]
     (set tags)))
 
 (defn render
-  "Renders the template with the data and, if supplied, partials."
+  "Renders the template with the data and, if supplied, partials.
+  
+  Opts is a persistent map with valid keys:
+    :default-delims - sequence of [open-delim close-delim] to set as default delimiters.  Default is [\"{{\" \"}}\"]."
   ([template]
      (render template {} {}))
   ([template data]
      (render template data {}))
   ([template data partials]
-     (let [[template data] (preprocess template data partials)]
-       (replace-all (render-template template data partials true)
+     (render template data partials nil))
+  ([template data partials opts]
+     (let [[template data] (preprocess template data partials opts)]
+       (replace-all (render-template template data partials opts true)
                     [["\\\\\\{\\\\\\{" "{{"]
                      ["\\\\\\}\\\\\\}" "}}"]]))))
 
@@ -509,4 +521,6 @@
      ([^String path data]
       (render (slurp (io/resource path)) data))
      ([^String path data partials]
-      (render (slurp (io/resource path)) data partials))))
+      (render (slurp (io/resource path)) data partials))
+     ([^String path data partials opts]
+      (render (slurp (io/resource path)) data partials opts))))
